@@ -454,8 +454,8 @@
    CONFIG — paste your Supabase project values here (Setup step 3
    in ECHO_PROJECT.md). Until then the app shows a wiring notice.
    ============================================================ */
-const SUPA_URL='PASTE_SUPABASE_URL_HERE';       // e.g. https://abcdefgh.supabase.co
-const SUPA_KEY='PASTE_SUPABASE_ANON_KEY_HERE';  // the "anon public" key
+const SUPA_URL='https://feezylkukvpmnyhusohi.supabase.co';   // project base URL (no /rest/v1/)
+const SUPA_KEY='sb_publishable__iyfrZ4tBgPEp2bPBiSH0g_jREfG94_';  // publishable key (safe to be public)
 const BACKEND=/^https:/.test(SUPA_URL);
 const sb=BACKEND?window.supabase.createClient(SUPA_URL,SUPA_KEY):null;
 let ME=null;            // {id, username}

@@ -152,6 +152,8 @@
       <div class="err" id="a-err"></div>
       <button class="btn" id="a-main" onclick="doAuth()">SIGN IN</button>
       <button class="btn ghost" id="a-toggle" onclick="toggleAuthMode()">NEW HERE? CREATE ACCOUNT</button>
+      <button class="btn ghost" onclick="guestIn()">🕶 CONTINUE WITHOUT ACCOUNT</button>
+      <p class="hint center">Without an account you can still do everything via shareable links — drops just won't land in an in-app inbox.</p>
     </div>
     <p class="hint center" style="margin-top:26px">Echo beta · accounts live in our own backend. Your listening data stays out of this until you say so.</p>
   </div>
@@ -296,6 +298,8 @@
     <div class="step">
       <div class="tag"><span class="num">02</span><span class="h h3">For whom</span></div>
       <div class="chips" id="c-people"></div>
+      <input class="field" id="c-toname" placeholder="…or just type their name (sends as a shareable link)" style="margin-top:10px" autocapitalize="off">
+      <input class="field" id="c-fromname" placeholder="Your name (shown to them)" style="margin-top:8px; display:none">
       <div class="rl" style="margin-top:10px"><span class="mono muted" style="flex-shrink:0">📱 NOTIFY</span><input class="field grow" id="c-phone" placeholder="Their phone with country code, e.g. +12125551234 (optional)" inputmode="tel"></div>
     </div>
 
@@ -458,6 +462,7 @@ const SUPA_URL='https://feezylkukvpmnyhusohi.supabase.co';   // project base URL
 const SUPA_KEY='sb_publishable__iyfrZ4tBgPEp2bPBiSH0g_jREfG94_';  // publishable key (safe to be public)
 const BACKEND=/^https:/.test(SUPA_URL);
 const sb=BACKEND?window.supabase.createClient(SUPA_URL,SUPA_KEY):null;
+let GUEST=false;        // true = using the app without an account (link mode)
 let ME=null;            // {id, username}
 let INBOX=[], SENT=[];  // drop rows from the server
 let PEOPLE=[];          // usernames for the recipient picker
@@ -477,7 +482,12 @@ function show(v){
   else if(['v-locked','v-timelock','v-unlocked','v-expired'].includes(v)) $('tb-drops').classList.add('on');
 }
 function tab(v){ show(v); if(v==='v-map') setTimeout(initMainMap,60); if(v==='v-drops') renderDrops(); }
-function goHome(){ history.replaceState(null,'',location.pathname+location.search); refreshData().then(()=>{ tab('v-drops'); }); }
+function goHome(){
+  history.replaceState(null,'',location.pathname+location.search);
+  if(ME){ refreshData().then(()=>tab('v-drops')); }
+  else if(BACKEND && !GUEST){ show('v-auth'); }
+  else tab('v-drops');
+}
 function toast(m){ const t=$('toast'); t.textContent=m; t.style.display='block'; setTimeout(()=>t.style.display='none',2200); }
 function haversine(a,b,c,d){ const R=6371000,rad=x=>x*Math.PI/180; const dLat=rad(c-a),dLon=rad(d-b);
   const h=Math.sin(dLat/2)**2+Math.cos(rad(a))*Math.cos(rad(c))*Math.sin(dLon/2)**2; return 2*R*Math.asin(Math.sqrt(h)); }
@@ -492,8 +502,25 @@ function playLink(t,a,c){ return '<a href="'+spo(t+' '+a)+'" target="_blank" sty
 const DEMOTAG=' <span style="color:#e9c46a;font-size:9px">DEMO</span>';
 /* legacy v1 link support (#d=...) */
 function dec(s){ s=s.replace(/-/g,'+').replace(/_/g,'/'); while(s.length%4) s+='='; return JSON.parse(decodeURIComponent(escape(atob(s)))); }
+function enc(o){ return btoa(unescape(encodeURIComponent(JSON.stringify(o)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
 function fromV2(a){ return {v:2, f:a[1], t:a[2], m:a[3], s:'https://open.spotify.com/track/'+a[4], la:a[5]/1e5, ln:a[6]/1e5, r:a[7], x:parseInt(a[8],36)*60000}; }
-function normalizeDrop(d){ return (Array.isArray(d)&&d[0]===2)?fromV2(d):d; }
+function fromV3(a){ return {v:3, f:a[1], t:a[2], m:a[3], s:a[4], la:a[5]==null?null:a[5]/1e5, ln:a[6]==null?null:a[6]/1e5, r:a[7]||null, x:a[8]?parseInt(a[8],36)*60000:null, o:a[9]?parseInt(a[9],36)*60000:null}; }
+function normalizeDrop(d){ if(Array.isArray(d)&&d[0]===3) return fromV3(d); return (Array.isArray(d)&&d[0]===2)?fromV2(d):d; }
+async function shorten(url){
+  try{
+    const r=await fetch('https://spoo.me/', {method:'POST',
+      headers:{'Accept':'application/json','Content-Type':'application/x-www-form-urlencoded'},
+      body:'url='+encodeURIComponent(url)});
+    if(!r.ok) return null;
+    const j=await r.json();
+    return j.short_url ? j.short_url.replace('http://','https://') : null;
+  }catch(e){ return null; }
+}
+function rememberLinkSent(t,x,link){
+  const l=JSON.parse(localStorage.getItem('echo_link_sent')||'[]');
+  l.push({t, x, link, at:Date.now()});
+  localStorage.setItem('echo_link_sent', JSON.stringify(l.slice(-50)));
+}
 
 /* ================= 9E drop icon ================= */
 function dropIconSVG(state){
@@ -584,7 +611,13 @@ async function afterAuth(user){
   else if(location.hash.startsWith('#d=')) legacyReceive();
   else { show('v-map'); setTimeout(initMainMap,80); }
 }
-async function signOut(){ await sb.auth.signOut(); ME=null; INBOX=[]; SENT=[]; location.hash=''; location.reload(); }
+async function signOut(){ if(sb) await sb.auth.signOut(); ME=null; GUEST=false; INBOX=[]; SENT=[]; location.hash=''; location.reload(); }
+function guestIn(){
+  GUEST=true; ME=null;
+  $('y-name').textContent='GUEST';
+  if(location.hash.startsWith('#d=')) legacyReceive();
+  else { show('v-map'); setTimeout(initMainMap,80); }
+}
 
 /* ================= data ================= */
 async function refreshData(){
@@ -615,9 +648,11 @@ function dropsTab(m){ dropsMode=m; $('seg-rec').classList.toggle('on',m==='rec')
 function renderDrops(){
   const box=$('drops-list'); box.innerHTML='';
   const list=dropsMode==='rec'?INBOX:SENT;
-  if(!list.length){
+  const linkSent=dropsMode==='sent'?JSON.parse(localStorage.getItem('echo_link_sent')||'[]').slice().reverse():[];
+  if(!list.length && !linkSent.length){
     box.innerHTML='<div class="empty">'+(dropsMode==='rec'
-      ?'Nothing here yet.<br>When someone drops you a song, it lands in this inbox by itself.'
+      ?(ME?'Nothing here yet.<br>When someone drops you a song, it lands in this inbox by itself.'
+          :'Link mode: received drops open straight from the links people send you.<br>Create an account to get a real in-app inbox.')
       :'Nothing sent yet.<br>Hit ＋ SEND A DROP to lock a song to a place, a date, or both.')+'</div>';
     return;
   }
@@ -639,7 +674,16 @@ function renderDrops(){
       else { navigator.clipboard.writeText(dropLink(d)).then(()=>toast('LINK COPIED')); } };
     box.appendChild(el);
   });
-  if(dropsMode==='sent') box.insertAdjacentHTML('beforeend','<p class="hint">Tap a sent drop to copy its direct link. Status updates when they unlock it.</p>');
+  linkSent.forEach(d=>{
+    const expired=d.x && Date.now()>new Date(d.x).getTime();
+    const el=document.createElement('div'); el.className='dcard'+(expired?' expired':'');
+    el.innerHTML='<div class="rl"><div class="grow"><div style="font-weight:700; font-size:14px">FOR '+(d.t||'?').toUpperCase()+'</div>'+
+      '<div class="mono muted" style="font-size:9.5px; margin-top:3px">LINK DROP · '+fmtExp(d.at)+'</div></div>'+
+      (expired?'<span class="st muted">💨 VANISHED</span>':'<span class="st" style="color:#e9c46a">🔗 TAP TO COPY LINK</span>')+'</div>';
+    el.onclick=()=>navigator.clipboard.writeText(d.link).then(()=>toast('LINK COPIED'));
+    box.appendChild(el);
+  });
+  if(dropsMode==='sent') box.insertAdjacentHTML('beforeend','<p class="hint">Tap a sent drop to copy its link. Inbox drops update their status when unlocked; link drops are fire-and-forget.</p>');
 }
 function dropLink(d){ return location.origin+location.pathname+'#k='+d.short_code; }
 
@@ -720,14 +764,17 @@ function openCompose(){
   setTimeout(initComposeMap,60);
 }
 function renderPeopleChips(){
+  $('c-fromname').style.display=ME?'none':'block';
   const box=$('c-people'); box.innerHTML='';
-  if(!PEOPLE.length){ box.innerHTML='<span class="hint">No other users yet — Nadia needs to create her account first.</span>'; return; }
+  if(!ME){ box.innerHTML='<span class="hint">Link mode — type their name below and you\'ll get a shareable link.</span>'; return; }
+  if(!PEOPLE.length){ box.innerHTML='<span class="hint">No other Echo accounts yet — type a name below to send it as a link instead.</span>'; return; }
   PEOPLE.forEach(u=>{
     const s=document.createElement('span'); s.className='chip'+(cRecipient===u?' on':''); s.textContent='@'+u;
-    s.onclick=()=>{ cRecipient=u; renderPeopleChips(); };
+    s.onclick=()=>{ cRecipient=u; $('c-toname').value=''; renderPeopleChips(); };
     box.appendChild(s);
   });
 }
+$('c-toname').addEventListener('input',()=>{ if($('c-toname').value.trim() && cRecipient){ cRecipient=null; renderPeopleChips(); } });
 function setGeoMode(on,el){ geoMode=on;
   $('c-geo-on').classList.toggle('on',on); $('c-geo-off').classList.toggle('on',!on);
   $('c-geo-wrap').style.display=on?'block':'none';
@@ -802,55 +849,74 @@ async function validateSong(){
 }
 async function createDrop(){
   const msg=$('c-msg').value.trim(), phone=$('c-phone').value.trim().replace(/[^+\d]/g,'');
+  const toName=$('c-toname').value.trim();
+  const fromName=ME?ME.username:$('c-fromname').value.trim();
+  const linkMode=!cRecipient;   /* no registered recipient picked → drop travels inside a shareable link */
   const errs=[];
   if(!csong) errs.push('a song link');
-  if(!cRecipient) errs.push('a recipient');
+  if(linkMode && !toName) errs.push('a recipient (pick a user or type a name)');
+  if(linkMode && !fromName) errs.push('your name');
   if(geoMode && !cpos) errs.push('a pin on the map (or switch off the place lock)');
   let opensAt=null;
   if(whenMode==='date'){ const v=$('c-opens').value; if(!v){ errs.push('the open date'); } else opensAt=new Date(v).toISOString(); }
   if(errs.length){ const e=$('c-err'); e.textContent='Still missing: '+errs.join(', ')+'.'; e.style.display='block'; return; }
   $('c-err').style.display='none'; $('c-send').disabled=true; $('c-send').textContent='DROPPING…';
-  const row={
-    sender:ME.id, sender_username:ME.username, recipient_username:cRecipient,
-    song_url:applyTimestamp(csong,$('c-ts')?$('c-ts').value:''), song_title:csong.title,
-    message:msg||null,
-    lat:geoMode&&cpos?+cpos.lat.toFixed(5):null, lng:geoMode&&cpos?+cpos.lng.toFixed(5):null,
-    radius:geoMode&&cpos?cradius:null,
-    opens_at:opensAt, surprise:whenMode==='date'?surprise:false,
-    expires_at:(geoMode&&cpos&&cexp>0)?new Date(Date.now()+cexp*3600000).toISOString():null
-  };
-  const {data,error}=await sb.from('drops').insert(row).select().single();
+  const finalSong=applyTimestamp(csong,$('c-ts')?$('c-ts').value:'');
+  const toLabel=cRecipient||toName;
+  const expiresAt=(geoMode&&cpos&&cexp>0)?new Date(Date.now()+cexp*3600000).toISOString():null;
+  let link=null;
+  if(linkMode){
+    const arr=[3, fromName, toName, msg||'', finalSong,
+      geoMode&&cpos?Math.round(cpos.lat*1e5):null,
+      geoMode&&cpos?Math.round(cpos.lng*1e5):null,
+      geoMode&&cpos?cradius:0,
+      expiresAt?Math.round(new Date(expiresAt).getTime()/60000).toString(36):'',
+      opensAt?Math.round(new Date(opensAt).getTime()/60000).toString(36):''];
+    link=location.origin+location.pathname+'#d='+enc(arr);
+    rememberLinkSent(toName, expiresAt, link);
+    const short=await shorten(link); if(short) link=short;
+  } else {
+    const row={
+      sender:ME.id, sender_username:ME.username, recipient_username:cRecipient,
+      song_url:finalSong, song_title:csong.title,
+      message:msg||null,
+      lat:geoMode&&cpos?+cpos.lat.toFixed(5):null, lng:geoMode&&cpos?+cpos.lng.toFixed(5):null,
+      radius:geoMode&&cpos?cradius:null,
+      opens_at:opensAt, surprise:whenMode==='date'?surprise:false,
+      expires_at:expiresAt
+    };
+    const {data,error}=await sb.from('drops').insert(row).select().single();
+    if(error){ $('c-send').disabled=false; $('c-send').textContent='📦 DROP IT';
+      const e=$('c-err'); e.textContent='Server said no: '+error.message; e.style.display='block'; return; }
+    await refreshData();
+    link=dropLink(data);
+  }
   $('c-send').disabled=false; $('c-send').textContent='📦 DROP IT';
-  if(error){ const e=$('c-err'); e.textContent='Server said no: '+error.message; e.style.display='block'; return; }
-  await refreshData();
-  const link=dropLink(data);
   window._shareLink=link;
-  $('s-sub').textContent=('A SONG FROM '+ME.username+' · FOR '+cRecipient).toUpperCase();
-  $('s-rule').textContent=row.lat!=null?('VALID WITHIN '+(row.radius>=1000?(row.radius/1000)+' KM':row.radius+' M')):(opensAt?'SEALED UNTIL '+fmtExp(opensAt):'OPEN NOW');
-  $('s-exp').textContent=row.expires_at?('EXP '+fmtExp(row.expires_at)):(opensAt?fmtExp(opensAt):'NO EXPIRY');
+  $('s-sub').textContent=('A SONG FROM '+fromName+' · FOR '+toLabel).toUpperCase();
+  $('s-rule').textContent=(geoMode&&cpos)?('VALID WITHIN '+(cradius>=1000?(cradius/1000)+' KM':cradius+' M')):(opensAt?'SEALED UNTIL '+fmtExp(opensAt):'OPEN NOW');
+  $('s-exp').textContent=expiresAt?('EXP '+fmtExp(expiresAt)):(opensAt?fmtExp(opensAt):'NO EXPIRY');
   $('s-link').textContent=link;
-  const smsBody='🔒 '+ME.username+' dropped you a song on Echo. Find it: '+link;
+  const smsBody='🔒 '+fromName+' dropped you a song on Echo. Find it: '+link;
   const noteTxt=encodeURIComponent(smsBody);
   $('s-wa').style.display='none'; $('s-sms').style.display='none';
   $('s-sms-status').textContent='';
   show('v-share');
   if(phone){
-    /* Auto-SMS via the send-sms Edge Function (Twilio). Falls back to
-       one-tap WhatsApp/SMS prefill buttons if the function isn't deployed
-       or Twilio rejects (e.g. unverified number on a trial account). */
+    /* Auto-SMS via the send-sms Edge Function (Twilio). Guests and any
+       failure fall back to one-tap WhatsApp/SMS prefill buttons. */
     const st=$('s-sms-status');
+    const nudge=()=>{ st.style.color='#e9c46a'; st.textContent='AUTO-SMS UNAVAILABLE — SEND A NUDGE INSTEAD:';
+      $('s-wa').style.display='block'; $('s-wa').href='https://wa.me/'+phone.replace('+','')+'?text='+noteTxt;
+      $('s-sms').style.display='block'; $('s-sms').href='sms:'+phone+'&body='+noteTxt; };
+    if(!ME){ nudge(); return; }
     st.style.color='var(--muted)'; st.textContent='📨 SENDING SMS…';
     try{
       const {data,error}=await sb.functions.invoke('send-sms',{body:{to:phone, body:smsBody}});
       if(error || !(data&&data.ok)) throw new Error((data&&data.error)||(error&&error.message)||'function unavailable');
       st.style.color='var(--green)';
       st.textContent='📨 SMS SENT TO '+phone+' ✓ — THEY JUST GOT PINGED';
-    }catch(e){
-      st.style.color='#e9c46a';
-      st.textContent='AUTO-SMS UNAVAILABLE — SEND A NUDGE INSTEAD:';
-      $('s-wa').style.display='block'; $('s-wa').href='https://wa.me/'+phone.replace('+','')+'?text='+noteTxt;
-      $('s-sms').style.display='block'; $('s-sms').href='sms:'+phone+'&body='+noteTxt;
-    }
+    }catch(e){ nudge(); }
   }
 }
 function copyLink(){ navigator.clipboard.writeText(window._shareLink).then(()=>toast('LINK COPIED')); }
@@ -918,6 +984,8 @@ async function unlockCurrent(fresh){
     const {error}=await sb.from('drops').update({unlocked_at:new Date().toISOString()}).eq('id',CUR.id);
     if(error){ toast('Sync hiccup — try again'); unlocking=false; return; }
     await refreshData();
+  } else {
+    localStorage.setItem(legacyKey(),'1');  /* link drops stay unlocked on this phone */
   }
   CUR.unlocked_at=new Date().toISOString();
   renderUnlocked(CUR,fresh);
@@ -936,41 +1004,43 @@ async function renderUnlocked(d,fresh){
   if(fresh&&navigator.vibrate) navigator.vibrate([100,60,100]);
 }
 
-/* ================= legacy v1 #d= links (kept so old test links still open) ================= */
+/* ================= link drops (#d= …) — work with or without an account ================= */
+function legacyKey(){ return 'echo_unlocked_'+(location.hash||'').slice(0,60); }
 function legacyReceive(){
   try{
     const p=normalizeDrop(dec(location.hash.slice(3)));
-    CUR={id:null, sender_username:p.f||'?', recipient_username:p.t||'you', song_url:p.s, song_title:null,
-      message:p.m||null, lat:p.la, lng:p.ln, radius:p.r, expires_at:new Date(p.x).toISOString(), opens_at:null, unlocked_at:null, short_code:null, legacy:true};
-    if(Date.now()>p.x){ $('e-sub').textContent=(p.f||'Someone')+' dropped you a song. It expired.'; show('v-expired'); return; }
-    openLegacyGeo();
-  }catch(e){ toast('LINK DIDN\'T DECODE'); tab('v-drops'); }
-}
-function openLegacyGeo(){
-  const d=CUR;
-  $('r-sub').textContent=('A SONG FROM '+d.sender_username+' · FOR '+d.recipient_username).toUpperCase();
-  $('r-zone').textContent='ZONE '+(d.radius>=1000?(d.radius/1000)+' KM':d.radius+' M');
-  $('r-countdown').textContent=fmtLeft(new Date(d.expires_at)-Date.now())+' LEFT';
-  $('r-exp').textContent='EXP '+fmtExp(d.expires_at);
-  $('r-directions').href='https://www.google.com/maps/dir/?api=1&destination='+d.lat+','+d.lng+'&travelmode=walking';
-  if(location.search.indexOf('dev=1')>=0) $('r-dev').style.display='block';
-  show('v-locked');
-  setTimeout(()=>{
-    if(rmap){ rmap.remove(); rmap=null; youMarker=null; }
-    rmap=L.map('rmap',{zoomControl:false}).setView([d.lat,d.lng],14);
-    L.tileLayer(DARK_TILES,TILE_OPTS).addTo(rmap);
-    L.circle([d.lat,d.lng],{radius:d.radius,color:'#ff2e63',weight:2,fillColor:'#ff2e63',fillOpacity:.15}).addTo(rmap);
-    L.marker([d.lat,d.lng],{icon:dropIcon('locked',46)}).addTo(rmap).bindPopup('🔒 The song lives here');
-  },80);
+    if(!p || !p.s) throw new Error('bad payload');
+    CUR={legacy:true, id:null, short_code:null,
+      sender_username:p.f||'?', recipient_username:p.t||'you',
+      song_url:p.s, song_title:null, message:p.m||null,
+      lat:(p.la==null?null:p.la), lng:(p.ln==null?null:p.ln), radius:p.r||null,
+      opens_at:p.o?new Date(p.o).toISOString():null, surprise:false,
+      expires_at:p.x?new Date(p.x).toISOString():null,
+      unlocked_at:localStorage.getItem(legacyKey())?new Date().toISOString():null};
+    openDrop(CUR);
+  }catch(e){
+    toast("LINK DIDN'T DECODE — ASK THEM TO RE-SEND");
+    if(BACKEND && !GUEST && !ME) show('v-auth'); else tab('v-drops');
+  }
 }
 
 /* ================= boot ================= */
-if(!BACKEND){ show('v-config'); }
+if(location.hash.startsWith('#d=')){
+  /* Link drops open for anyone — no account needed. */
+  GUEST=true; legacyReceive();
+  if(BACKEND) sb.auth.getSession().then(({data:{session}})=>{ if(session){ GUEST=false; afterAuthQuiet(session.user); } });
+}
+else if(!BACKEND){ show('v-config'); }
 else {
   sb.auth.getSession().then(({data:{session}})=>{
     if(session) afterAuth(session.user);
     else show('v-auth');
   });
+}
+/* load profile + inbox in the background without changing the current view */
+async function afterAuthQuiet(user){
+  const {data:p}=await sb.from('profiles').select('*').eq('id',user.id).maybeSingle();
+  if(p){ ME={id:user.id, username:p.username}; $('y-name').textContent=ME.username.toUpperCase(); await refreshData(); }
 }
 </script>
 </body>
